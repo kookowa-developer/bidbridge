@@ -1,0 +1,11 @@
+{"deadline": "2027-01-20", "requirements": [
+ {"type":"deadline","due":"2027-01-20"},
+ {"type":"security","doc_kind":"bid_security","value":120000,"op":"=="},
+ {"type":"turnover","value":2000000,"op":">="},
+ {"type":"experience","subject":"years","value":5,"op":">="},
+ {"type":"document","doc_kind":"manufacturer_authorization"},
+ {"type":"document","doc_kind":"registration_certificate"},
+ {"type":"document","doc_kind":"tax_clearance"},
+ {"type":"document","doc_kind":"license"},
+ {"type":"risk"}
+]}

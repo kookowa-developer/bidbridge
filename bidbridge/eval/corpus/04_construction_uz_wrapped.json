@@ -1,0 +1,15 @@
+{"deadline": "2027-02-12", "requirements": [
+ {"type":"deadline","due":"2027-02-12"},
+ {"type":"document","doc_kind":"license"},
+ {"type":"experience","subject":"years","value":5,"op":">="},
+ {"type":"experience","subject":"contracts","value":2,"op":">="},
+ {"type":"numeric","value":10,"op":">="},
+ {"type":"numeric","value":40,"op":">="},
+ {"type":"security","doc_kind":"bid_security","value":3000,"op":"=="},
+ {"type":"document","doc_kind":"application_form"},
+ {"type":"document","doc_kind":"technical_proposal"},
+ {"type":"document","doc_kind":"price_proposal"},
+ {"type":"document","doc_kind":"certificate"},
+ {"type":"document","doc_kind":"bankruptcy_statement"},
+ {"type":"risk"}
+]}

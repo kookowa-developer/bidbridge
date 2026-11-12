@@ -1,0 +1,8 @@
+{"deadline": null, "requirements": [
+ {"type":"numeric","value":55,"op":">="},
+ {"type":"numeric","value":400,"op":">="},
+ {"type":"numeric","value":24,"op":">="},
+ {"type":"numeric","value":30,"op":"<="},
+ {"type":"numeric","value":45,"op":"<="},
+ {"type":"experience","subject":"years","value":3,"op":">="}
+]}

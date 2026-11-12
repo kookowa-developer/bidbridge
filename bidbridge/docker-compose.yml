@@ -1,0 +1,22 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bidbridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: bidbridge
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidbridge"]
+      interval: 5s
+      retries: 10
+  api:
+    build: .
+    env_file: [.env]
+    environment:
+      BIDBRIDGE_DATABASE_URL: postgresql+psycopg://bidbridge:${POSTGRES_PASSWORD:-change-me}@db:5432/bidbridge
+    ports: ["8000:8000"]
+    depends_on:
+      db: {condition: service_healthy}
+volumes:
+  pgdata:

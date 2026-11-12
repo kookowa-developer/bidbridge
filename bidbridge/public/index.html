@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BidBridge AI</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50 text-slate-800">
+<div id="auth" class="hidden"></div>
+<div id="app" class="hidden">
+<header class="bg-slate-900 text-white">
+  <div class="max-w-6xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3">
+    <div class="font-bold text-lg">BidBridge <span class="text-emerald-400">AI</span></div>
+    <select id="company" class="text-slate-900 rounded px-2 py-1 text-sm"></select>
+    <button id="btn-new-company" class="text-sm underline">+ Kompaniya</button>
+    <button id="btn-demo" class="ml-auto text-sm bg-emerald-500 hover:bg-emerald-600 rounded px-3 py-1">Demo ma'lumot yuklash</button>
+    <span id="whoami" class="text-xs text-slate-300"></span>
+    <button id="btn-logout" class="text-sm underline">Chiqish</button>
+  </div>
+  <nav class="max-w-6xl mx-auto px-4 flex gap-1 text-sm" id="tabs"></nav>
+</header>
+<main id="view" class="max-w-6xl mx-auto px-4 py-6"></main>
+</div>
+<div id="toast" class="fixed bottom-4 right-4 hidden bg-slate-900 text-white text-sm rounded px-4 py-2 shadow"></div>
+
+<script>
+"use strict";
+const state = { companyId: null, tab: "passport", tenderId: null, me: null };
+const TOKEN_KEY = "bidbridge_token";
+const store = { get() { try { return localStorage.getItem(TOKEN_KEY); } catch (_) { return null; } },
+  set(v) { try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch (_) {} } };
+const $ = (s) => document.querySelector(s);
+
+/* ---------- safe DOM builder: all text goes through textContent (tender text is untrusted) ---------- */
+function h(tag, attrs, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") el.className = v;
+    else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return el;
+}
+function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.remove("hidden"); setTimeout(() => t.classList.add("hidden"), 3500); }
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) }; const tok = store.get(); if (tok) headers.Authorization = "Bearer " + tok;
+  const r = await fetch(path, { ...opts, headers });
+  if (r.status === 401 && !opts.noAuthRedirect) { store.set(null); state.me = null; showLogin(); throw new Error("Sessiya tugadi"); }
+  if (!r.ok) {
+    let msg = r.statusText;
+    try { const j = await r.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch (_) {}
+    toast("Xato: " + msg); throw new Error(msg);
+  }
+  return r.status === 204 ? null : r.json();
+}
+const post = (p, body) => api(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const fmt = (n) => n == null ? "" : Number(n).toLocaleString("ru-RU");
+const fd = (obj) => { const f = new FormData(); for (const [k, v] of Object.entries(obj)) if (v !== "" && v != null) f.append(k, v); return f; };
+
+const BADGE = { ok: ["bg-emerald-100 text-emerald-800", "MOS"], warn: ["bg-amber-100 text-amber-800", "OGOHLANTIRISH"],
+  fail: ["bg-red-100 text-red-800", "NOMUVOFIQ"], manual: ["bg-slate-200 text-slate-700", "QO'LDA"] };
+const badge = (s) => h("span", { class: "px-2 py-0.5 rounded text-xs font-semibold " + BADGE[s][0] }, BADGE[s][1]);
+const card = (title, ...body) => h("section", { class: "bg-white rounded-lg shadow-sm border border-slate-200 p-4 mb-5" }, h("h2", { class: "font-semibold mb-3" }, title), ...body);
+const inp = (name, ph, type = "text", extra = {}) => h("input", { name, placeholder: ph, type, class: "border rounded px-2 py-1 text-sm w-full", ...extra });
+const btn = (label, onclick, cls = "bg-slate-900 text-white") => h("button", { type: "button", onclick, class: "rounded px-3 py-1 text-sm " + cls }, label);
+const table = (head, rows) => h("div", { class: "overflow-x-auto" }, h("table", { class: "w-full text-sm" },
+  h("thead", {}, h("tr", { class: "text-left text-slate-500" }, head.map((x) => h("th", { class: "py-1 pr-3" }, x)))),
+  h("tbody", {}, rows.map((r) => h("tr", { class: "border-t" }, r.map((c) => h("td", { class: "py-1 pr-3 align-top" }, c)))))));
+
+/* ---------- authenticated file download (links cannot carry the Bearer header) ---------- */
+async function download(url, fallbackName) {
+  const tok = store.get(); const r = await fetch(url, { headers: { Authorization: "Bearer " + tok } });
+  if (!r.ok) { toast("Yuklab bo'lmadi"); return; }
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(r.headers.get("content-disposition") || "");
+  const a = h("a", { href: URL.createObjectURL(await r.blob()), download: m ? decodeURIComponent(m[1]) : fallbackName });
+  document.body.append(a); a.click(); a.remove();
+}
+const dl = (label, url, name) => h("button", { type: "button", class: "text-emerald-700 underline text-sm", onclick: () => download(url, name) }, label);
+
+/* ---------- auth ---------- */
+function showLogin() {
+  $("#app").classList.add("hidden"); const box = $("#auth"); box.classList.remove("hidden");
+  let mode = "login";
+  const draw = () => {
+    const f = h("form", { class: "space-y-3", onsubmit: async (e) => {
+        e.preventDefault(); const el = e.target.elements;
+        try {
+          const t = await api("/api/auth/" + mode, { method: "POST", noAuthRedirect: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: el.email.value, password: el.password.value }) });
+          store.set(t.access_token); await boot();
+        } catch (_) {} } },
+      inp("email", "Email", "email", { required: true, autocomplete: "username" }),
+      inp("password", "Parol (kamida 8 belgi, harf va raqam)", "password", { required: true, autocomplete: mode === "login" ? "current-password" : "new-password" }),
+      h("button", { type: "submit", class: "w-full rounded px-3 py-2 text-sm bg-emerald-600 text-white" }, mode === "login" ? "Kirish" : "Ro'yxatdan o'tish"),
+      btn(mode === "login" ? "Hisobingiz yo'qmi? Ro'yxatdan o'ting" : "Hisobingiz bormi? Kiring", () => { mode = mode === "login" ? "register" : "login"; draw(); }, "text-sm underline w-full"));
+    box.replaceChildren(h("div", { class: "max-w-sm mx-auto mt-20 bg-white border rounded-lg p-6 shadow-sm" },
+      h("div", { class: "font-bold text-xl mb-4" }, "BidBridge ", h("span", { class: "text-emerald-600" }, "AI")), f));
+  };
+  draw();
+}
+async function boot() {
+  try { state.me = await api("/api/auth/me", { noAuthRedirect: true }); } catch (_) { store.set(null); return showLogin(); }
+  $("#auth").classList.add("hidden"); $("#app").classList.remove("hidden"); $("#whoami").textContent = state.me.email;
+  await loadCompanies();
+}
+
+/* ---------- shell ---------- */
+async function loadCompanies(select) {
+  const list = await api("/api/companies");
+  const sel = $("#company"); sel.replaceChildren(...list.map((c) => h("option", { value: c.id }, c.legal_name)));
+  if (!list.length) { state.companyId = null; return render(); }
+  state.companyId = select ?? state.companyId ?? list[0].id;
+  if (!list.some((c) => c.id === state.companyId)) state.companyId = list[0].id;
+  sel.value = state.companyId; render();
+}
+function renderTabs() {
+  const tabs = [["passport", "Kompaniya pasporti"], ["tenders", "Tenderlar"], ["alerts", "Muddatlar"], ["team", "Jamoa"], ["metrics", "Natijalar (pilot)"], ["telegram", "Telegram"]];
+  $("#tabs").replaceChildren(...tabs.map(([k, l]) => h("button", { class: "px-3 py-2 rounded-t " + (state.tab === k ? "bg-slate-50 text-slate-900" : "text-slate-300 hover:text-white"),
+    onclick: () => { state.tab = k; state.tenderId = null; render(); } }, l)));
+}
+async function render() {
+  renderTabs();
+  const v = $("#view");
+  if (state.tab === "metrics") { v.replaceChildren(await viewMetrics()); return; }
+  if (state.tab === "telegram") { v.replaceChildren(await viewTelegram()); return; }
+  if (!state.companyId) { v.replaceChildren(h("p", {}, "Kompaniya yo'q. «Demo ma'lumot yuklash» yoki «+ Kompaniya» ni bosing.")); return; }
+  v.replaceChildren(h("p", { class: "text-slate-500" }, "Yuklanmoqda..."));
+  try {
+    const node = state.tab === "passport" ? await viewPassport() : state.tab === "alerts" ? await viewAlerts() : state.tab === "team" ? await viewTeam()
+      : state.tenderId ? await viewTender(state.tenderId) : await viewTenders();
+    v.replaceChildren(node);
+  } catch (e) { v.replaceChildren(h("p", { class: "text-red-700" }, "Ko'rsatib bo'lmadi: " + e.message)); }
+}
+
+/* ---------- passport ---------- */
+async function viewPassport() {
+  const p = await api(`/api/companies/${state.companyId}`);
+  const c = p.company; const cid = c.id;
+  const kindLabel = Object.fromEntries(p.doc_kinds.map((k) => [k.value, k.label]));
+  const del = (url) => btn("o'chirish", async () => { await api(url, { method: "DELETE" }); render(); }, "text-red-600 underline");
+
+  const info = card("Kompaniya ma'lumotlari", table(["Nomi", "STIR", "Ro'yxatdan o'tgan", "Rahbar", "Manzil"],
+    [[c.legal_name, c.stir || "—", c.registration_date || "—", c.director || "—", c.address || "—"]]));
+
+  const docForm = h("form", { class: "grid grid-cols-2 md:grid-cols-6 gap-2 mt-3", onsubmit: async (e) => {
+      e.preventDefault(); const f = e.target; let fields = {};
+      if (f.elements.stir.value) fields.stir = f.elements.stir.value;
+      if (f.elements.lname.value) fields.legal_name = f.elements.lname.value;
+      await api(`/api/companies/${cid}/documents`, { method: "POST", body: fd({ kind: f.elements.kind.value, title: f.elements.dtitle.value,
+        issued_date: f.elements.issued.value, expires_date: f.elements.expires.value, fields: JSON.stringify(fields), file: f.elements.file.files[0] }) });
+      render(); } },
+    h("select", { name: "kind", class: "border rounded px-2 py-1 text-sm col-span-2" }, p.doc_kinds.map((k) => h("option", { value: k.value }, k.label))),
+    inp("dtitle", "Sarlavha", "text", { required: true }), inp("issued", "Berilgan", "date", { title: "Berilgan sana" }), inp("expires", "Amal qilish", "date", { title: "Amal qilish muddati" }),
+    inp("stir", "Hujjatdagi STIR"), inp("lname", "Hujjatdagi nom"), h("input", { type: "file", name: "file", class: "text-sm col-span-2" }),
+    btn("Hujjat qo'shish", (e) => e.target.form.requestSubmit(), "bg-emerald-600 text-white"));
+  const docs = card("Hujjatlar", table(["Turi", "Sarlavha", "Berilgan", "Muddati", "Hujjatdagi maydonlar", ""],
+    p.documents.map((d) => [kindLabel[d.kind] || d.kind, d.title, d.issued_date || "—", d.expires_date || "—",
+      Object.entries(d.fields).map(([k, v]) => `${k}: ${v}`).join("; ") || "—", h("span", { class: "flex gap-2" }, d.filename ? dl("yuklab olish", `/api/documents/${d.id}/download`, d.filename) : null, del(`/api/documents/${d.id}`))])), docForm);
+
+  const attrForm = h("form", { class: "grid grid-cols-2 md:grid-cols-5 gap-2 mt-3", onsubmit: async (e) => {
+      e.preventDefault(); const f = e.target;
+      await post(`/api/companies/${cid}/attributes`, { label: f.elements.label.value, value: parseFloat(f.elements.value.value), unit: f.elements.unit.value || null, source: f.elements.source.value || null });
+      render(); } },
+    inp("label", "Ko'rsatkich (masalan: Oylik ishlab chiqarish quvvati)", "text", { required: true }), inp("value", "Qiymat", "number", { required: true, step: "any" }),
+    inp("unit", "Birlik (dona, kishi...)"), inp("source", "Manba hujjat"), btn("Qo'shish", (e) => e.target.form.requestSubmit(), "bg-emerald-600 text-white"));
+  const attrs = card("Ko'rsatkichlar (tender talablari bilan solishtiriladi)", table(["Ko'rsatkich", "Qiymat", "Birlik", "Manba", ""],
+    p.attributes.map((a) => [a.label, fmt(a.value), a.unit || "", a.source || "—", del(`/api/attributes/${a.id}`)])), attrForm);
+
+  const conForm = h("form", { class: "grid grid-cols-2 md:grid-cols-5 gap-2 mt-3", onsubmit: async (e) => {
+      e.preventDefault(); const f = e.target;
+      await post(`/api/companies/${cid}/contracts`, { customer: f.elements.customer.value, subject: f.elements.subject.value, amount_uzs: f.elements.amount.value ? parseFloat(f.elements.amount.value) : null,
+        completed_date: f.elements.done.value || null, similar: f.elements.similar.checked }); render(); } },
+    inp("customer", "Buyurtmachi", "text", { required: true }), inp("subject", "Predmet", "text", { required: true }), inp("amount", "Summa (so'm)", "number"), inp("done", "Yakunlangan", "date"),
+    h("label", { class: "text-sm flex items-center gap-1" }, h("input", { type: "checkbox", name: "similar", checked: true }), "o'xshash"),
+    btn("Qo'shish", (e) => e.target.form.requestSubmit(), "bg-emerald-600 text-white"));
+  const cons = card("Bajarilgan shartnomalar (tajriba)", table(["Buyurtmachi", "Predmet", "Summa", "Sana", "O'xshash", ""],
+    p.contracts.map((x) => [x.customer, x.subject, fmt(x.amount_uzs), x.completed_date || "", x.similar ? "ha" : "yo'q", del(`/api/contracts/${x.id}`)])), conForm);
+
+  const finForm = h("form", { class: "flex gap-2 mt-3", onsubmit: async (e) => { e.preventDefault(); const f = e.target;
+      await api(`/api/companies/${cid}/financials`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ year: parseInt(f.elements.year.value), revenue_uzs: parseFloat(f.elements.rev.value) }) });
+      render(); } }, inp("year", "Yil", "number", { required: true }), inp("rev", "Aylanma (so'm)", "number", { required: true }), btn("Saqlash", (e) => e.target.form.requestSubmit(), "bg-emerald-600 text-white"));
+  const fin = card("Yillik aylanma", table(["Yil", "Aylanma (so'm)"], p.financials.map((f) => [f.year, fmt(f.revenue_uzs)])), finForm);
+  return h("div", {}, info, docs, attrs, cons, fin);
+}
+
+/* ---------- tenders ---------- */
+async function viewTenders() {
+  const list = await api(`/api/companies/${state.companyId}/tenders`);
+  const form = h("form", { class: "grid md:grid-cols-2 gap-2", onsubmit: async (e) => {
+      e.preventDefault(); const f = e.target; const sub = f.querySelector("button"); sub.disabled = true; sub.textContent = "Tahlil qilinmoqda...";
+      try {
+        const t = await api(`/api/companies/${state.companyId}/tenders`, { method: "POST", body: fd({ title: f.elements.ttitle.value, buyer: f.elements.buyer.value, text: f.elements.text.value, file: f.elements.file.files[0] }) });
+        state.tenderId = t.id; render();
+      } finally { sub.disabled = false; sub.textContent = "Tahlil qilish"; } } },
+    inp("ttitle", "Tender nomi", "text", { required: true }), inp("buyer", "Buyurtmachi"),
+    h("input", { type: "file", name: "file", accept: ".pdf,.docx,.txt,.png,.jpg,.jpeg", class: "text-sm" }),
+    h("textarea", { name: "text", rows: 4, placeholder: "yoki tender matnini shu yerga qo'ying", class: "border rounded px-2 py-1 text-sm md:col-span-2" }),
+    h("button", { type: "submit", class: "rounded px-3 py-1 text-sm bg-emerald-600 text-white w-40" }, "Tahlil qilish"));
+  return h("div", {}, card("Yangi tender hujjatini tahlil qilish (PDF, skaner PDF, rasm, DOCX, TXT; ko'pi bilan 4 MB)", form),
+    card("Tenderlar", list.length ? table(["Nomi", "Muddat", ""], list.map((t) => [t.title, t.deadline || "aniqlanmadi",
+      btn("Ochish", () => { state.tenderId = t.id; render(); })])) : h("p", { class: "text-slate-500 text-sm" }, "Hali tender yo'q.")));
+}
+
+const REC = { GO: ["bg-emerald-600", "BAJARISH (GO)"], CONDITIONAL: ["bg-amber-500", "SHARTLI"], "NO-GO": ["bg-red-600", "QATNASHMASLIK (NO-GO)"] };
+
+async function viewTender(id) {
+  const [t, rep, bid] = await Promise.all([api(`/api/tenders/${id}`), api(`/api/tenders/${id}/check`), api(`/api/tenders/${id}/bid`)]);
+  const r = rep.readiness;
+  const color = r.fail ? "text-red-600" : (r.warn || r.manual) ? "text-amber-600" : "text-emerald-600";
+  const head = card(t.title,
+    h("div", { class: "flex flex-wrap items-center gap-6" },
+      h("div", { class: "text-5xl font-bold " + color }, r.score + "%"),
+      h("div", {}, h("div", { class: "font-medium" }, r.verdict),
+        h("div", { class: "text-sm text-slate-500" }, `Mos: ${r.ok} · Ogohlantirish: ${r.warn} · Nomuvofiq: ${r.fail} · Qo'lda: ${r.manual}`),
+        h("div", { class: "text-sm text-slate-500" }, `Topshirish muddati: ${rep.deadline || "aniqlanmadi"} · Rejim: ${t.extraction_mode} · Sahifalar: ${t.page_count}` +
+          (t.ocr_provider ? ` · OCR: ${t.ocr_provider}` : "") + (t.analysis_seconds != null ? ` · Tahlil: ${t.analysis_seconds}s` : ""))),
+      btn("← Tenderlar", () => { state.tenderId = null; render(); }, "ml-auto border")),
+    h("p", { class: "text-xs text-slate-500 mt-3" }, "Natijalar yordamchi vosita. Har bir xulosa tender hujjatidagi iqtibos bilan ko'rsatiladi; yuridik masalalarda mutaxassis tekshiruvi shart."));
+
+  const bidCard = card("Bid / No-Bid tavsiyasi",
+    h("div", { class: "flex flex-wrap items-center gap-4 mb-3" },
+      h("span", { class: "text-white text-sm font-semibold rounded px-3 py-1 " + (REC[bid.recommendation] || REC.CONDITIONAL)[0] }, (REC[bid.recommendation] || [0, bid.recommendation])[1]),
+      h("span", { class: "text-2xl font-bold" }, bid.score + "/100"),
+      h("span", { class: "text-sm text-slate-500" }, `Ishonch: ${bid.confidence} · Taxminiy ish: ${bid.effort_days} kun · Qolgan: ${bid.days_left ?? "?"} kun`)),
+    h("p", { class: "text-sm mb-2" }, bid.summary),
+    bid.blockers.length ? h("div", { class: "mb-3" }, h("div", { class: "text-sm font-semibold text-red-700" }, "To'siqlar"), h("ul", { class: "list-disc ml-5 text-sm" }, bid.blockers.map((b) => h("li", {}, b)))) : null,
+    table(["Omil", "Vazn", "Ball", "Izoh"], bid.factors.map((f) => [f.name, Math.round(f.weight * 100) + "%", Math.round(f.score), f.detail])),
+    h("details", { class: "mt-2" }, h("summary", { class: "text-xs text-slate-500 cursor-pointer" }, "Taxminlar"), h("ul", { class: "list-disc ml-5 text-xs text-slate-600" }, bid.assumptions.map((a) => h("li", {}, a)))));
+
+  const order = { fail: 0, warn: 1, manual: 2, ok: 3 };
+  const rows = [...rep.results].sort((a, b) => order[a.status] - order[b.status]).map((x) => resultRow(x, id));
+  const results = card("Talablar bo'yicha tekshiruv", h("div", { class: "space-y-3" }, rows));
+  const cons = rep.consistency.length ? card("Hujjatlararo nomuvofiqliklar", h("div", { class: "space-y-3" }, rep.consistency.map((x) => resultRow(x, id)))) : null;
+
+  const tasksBox = card("Jamoa vazifalari",
+    btn("Nomuvofiqliklardan vazifa yaratish", async () => { await post(`/api/tenders/${id}/tasks/auto`, {}); render(); }, "bg-slate-900 text-white mb-3"),
+    t.tasks.length ? table(["", "Vazifa", "Mas'ul rol", "Muddat"], t.tasks.map((k) => [
+      h("input", { type: "checkbox", checked: k.done, onchange: async (e) => { await api(`/api/tasks/${k.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ done: e.target.checked }) }); } }),
+      k.title, ({ lawyer: "Yurist", accountant: "Buxgalter", technical: "Texnik", other: "Boshqa" })[k.role] || k.role, k.due || "—"])) : h("p", { class: "text-sm text-slate-500" }, "Vazifalar yo'q."));
+
+  const pilot = card("Vaqt o'lchovi (50% qisqarish isboti uchun)",
+    h("p", { class: "text-sm text-slate-600 mb-2" }, "Shu tenderni qo'lda tayyorlash va BidBridge bilan tayyorlash uchun sarflangan vaqtni kiriting. Natijalar «Natijalar (pilot)» bo'limida jamlanadi."),
+    h("form", { class: "grid grid-cols-2 md:grid-cols-4 gap-2", onsubmit: async (e) => { e.preventDefault(); const f = e.target.elements;
+        await post(`/api/tenders/${id}/pilot`, { manual_minutes: parseFloat(f.manual.value), assisted_minutes: parseFloat(f.assisted.value), note: f.note.value || null });
+        e.target.reset(); toast("Saqlandi"); } },
+      inp("manual", "Qo'lda (daqiqa)", "number", { required: true, step: "any", min: "1" }), inp("assisted", "BidBridge bilan (daqiqa)", "number", { required: true, step: "any", min: "1" }),
+      inp("note", "Izoh"), h("button", { type: "submit", class: "rounded px-3 py-1 text-sm bg-emerald-600 text-white" }, "Saqlash")));
+  return h("div", {}, head, bidCard, results, cons, tasksBox, pilot);
+}
+
+function resultRow(x, tenderId) {
+  const kids = [h("div", { class: "flex items-center gap-2" }, badge(x.status), h("span", { class: "font-medium" }, x.label), x.critical ? h("span", { class: "text-xs text-red-600" }, "muhim") : null),
+    h("div", { class: "text-sm mt-1" }, x.message)];
+  if (x.action) kids.push(h("div", { class: "text-sm text-slate-600 mt-1" }, "→ " + x.action));
+  if (x.generate) kids.push(dl("Hujjat shablonini yuklab olish (.docx)", `/api/tenders/${tenderId}/generate/${x.generate}`, x.generate + ".docx"));
+  if (x.quote) kids.push(h("details", { class: "mt-1" }, h("summary", { class: "text-xs text-slate-500 cursor-pointer" }, `Manba: ${x.page}-sahifa`), h("blockquote", { class: "text-xs text-slate-600 border-l-2 pl-2 mt-1" }, x.quote)));
+  return h("div", { class: "border-l-4 pl-3 " + ({ ok: "border-emerald-400", warn: "border-amber-400", fail: "border-red-500", manual: "border-slate-300" })[x.status] }, kids);
+}
+
+async function viewAlerts() {
+  const a = await api(`/api/companies/${state.companyId}/alerts`);
+  const col = { critical: "text-red-700", warning: "text-amber-700", info: "text-slate-600" };
+  return card("Muddatlar va ogohlantirishlar", a.length ? h("ul", { class: "space-y-2 text-sm" }, a.map((x) => h("li", { class: col[x.severity] }, `${x.due || ""} — ${x.message}`))) : h("p", { class: "text-sm text-slate-500" }, "Ogohlantirish yo'q."));
+}
+
+/* ---------- team ---------- */
+const ROLE_LABEL = { owner: "Egasi", lawyer: "Yurist", accountant: "Buxgalter", technical: "Texnik mutaxassis", viewer: "Kuzatuvchi" };
+async function viewTeam() {
+  const list = await api(`/api/companies/${state.companyId}/members`);
+  const form = h("form", { class: "grid grid-cols-2 md:grid-cols-4 gap-2 mt-3", onsubmit: async (e) => { e.preventDefault(); const f = e.target.elements;
+      await post(`/api/companies/${state.companyId}/members`, { email: f.email.value, role: f.role.value }); render(); } },
+    inp("email", "Foydalanuvchi emaili (ro'yxatdan o'tgan bo'lishi kerak)", "email", { required: true }),
+    h("select", { name: "role", class: "border rounded px-2 py-1 text-sm" }, Object.entries(ROLE_LABEL).filter(([k]) => k !== "owner").map(([k, l]) => h("option", { value: k }, l))),
+    h("button", { type: "submit", class: "rounded px-3 py-1 text-sm bg-emerald-600 text-white" }, "Qo'shish / rolni o'zgartirish"));
+  return card("Jamoa a'zolari va rollar", table(["Email", "Ism", "Rol"], list.map((m) => [m.email, m.full_name || "—", ROLE_LABEL[m.role] || m.role])), form,
+    h("p", { class: "text-xs text-slate-500 mt-2" }, "Kuzatuvchi faqat o'qiydi. Jamoani faqat egasi boshqaradi."));
+}
+
+/* ---------- pilot metrics ---------- */
+async function viewMetrics() {
+  const m = await api("/api/metrics");
+  const pct = (v) => v == null ? "—" : v + "%";
+  const status = m.target_met == null ? ["bg-slate-200 text-slate-700", `Hali isbotlanmagan: ${m.pilot_samples}/10 o'lchov`]
+    : m.target_met ? ["bg-emerald-100 text-emerald-800", "50% maqsadga erishildi (median)"] : ["bg-red-100 text-red-800", "50% maqsadga erishilmadi"];
+  return card("Pilot natijalari",
+    h("span", { class: "inline-block text-sm font-semibold rounded px-3 py-1 mb-3 " + status[0] }, status[1]),
+    table(["Ko'rsatkich", "Qiymat"], [["Tahlil qilingan tenderlar", m.tenders_analysed], ["O'rtacha tahlil vaqti", m.avg_analysis_seconds == null ? "—" : m.avg_analysis_seconds + " s"],
+      ["OCR ishlatilgan", m.ocr_runs], ["Vaqt o'lchovlari soni", m.pilot_samples], ["O'rtacha qisqarish", pct(m.mean_reduction_pct)], ["Median qisqarish", pct(m.median_reduction_pct)],
+      ["Eng kam / eng ko'p", `${pct(m.min_reduction_pct)} / ${pct(m.max_reduction_pct)}`], ["Maqsad", m.target_pct + "%"]]),
+    h("p", { class: "text-xs text-slate-500 mt-3" }, m.note));
+}
+
+/* ---------- telegram ---------- */
+async function viewTelegram() {
+  const me = state.me = await api("/api/auth/me");
+  const box = h("div", { class: "mt-3" });
+  const body = [h("p", { class: "text-sm mb-2" }, me.telegram_linked ? "Telegram ulangan. Buyruqlar: /alerts, /tenders, /check, /bid, yoki tender faylini yuboring." : "Telegram hali ulanmagan."),
+    btn("Ulash kodini olish", async () => {
+      const r = await post("/api/telegram/link-code", {});
+      box.replaceChildren(h("div", { class: "text-sm" }, "Botga yuboring: ", h("code", { class: "bg-slate-100 px-1" }, "/start " + r.code), ` (${r.expires_minutes} daqiqa amal qiladi)`),
+        r.deep_link ? h("a", { href: r.deep_link, target: "_blank", rel: "noopener", class: "text-emerald-700 underline text-sm" }, "Botni ochish") : null,
+        r.bot_configured ? null : h("p", { class: "text-xs text-amber-700 mt-1" }, "Bot serverda hali sozlanmagan (TELEGRAM_BOT_TOKEN)."));
+    }, "bg-slate-900 text-white"), box,
+    h("label", { class: "flex items-center gap-2 text-sm mt-4" }, h("input", { type: "checkbox", checked: me.digest_enabled, onchange: async (e) => {
+      await api("/api/auth/digest?enabled=" + e.target.checked, { method: "PUT" }); toast("Saqlandi"); } }), "Kunlik xulosani Telegramga yuborish")];
+  return card("Telegram bot", ...body);
+}
+
+/* ---------- boot ---------- */
+$("#company").addEventListener("change", (e) => { state.companyId = parseInt(e.target.value); state.tenderId = null; render(); });
+$("#btn-demo").addEventListener("click", async () => { const r = await post("/api/demo/seed", {}); state.tab = "tenders"; state.tenderId = r.tender_id; await loadCompanies(r.company_id); toast("Demo yuklandi"); });
+$("#btn-logout").addEventListener("click", () => { store.set(null); state.me = null; state.companyId = null; showLogin(); });
+$("#btn-new-company").addEventListener("click", async () => {
+  const name = prompt("Kompaniya nomi:"); if (!name) return;
+  const c = await post("/api/companies", { legal_name: name }); state.tab = "passport"; await loadCompanies(c.id);
+});
+store.get() ? boot() : showLogin();
+</script>
+</body>
+</html>

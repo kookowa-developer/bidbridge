@@ -1,0 +1,4 @@
+# Local OCR (Docker / VM). Needs the tesseract binary + language packs (see Dockerfile).
+pypdfium2>=4.30
+pillow>=10.0
+pytesseract>=0.3.10

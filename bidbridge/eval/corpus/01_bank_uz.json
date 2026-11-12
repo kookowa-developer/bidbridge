@@ -1,0 +1,13 @@
+{"deadline": "2026-12-18", "requirements": [
+ {"type":"deadline","due":"2026-12-18"},
+ {"type":"experience","subject":"years","value":2,"op":">="},
+ {"type":"experience","subject":"contracts","value":3,"op":">="},
+ {"type":"security","doc_kind":"bid_security","value":15000000,"op":"=="},
+ {"type":"document","doc_kind":"registration_certificate"},
+ {"type":"document","doc_kind":"license"},
+ {"type":"document","doc_kind":"tax_clearance"},
+ {"type":"document","doc_kind":"power_of_attorney"},
+ {"type":"document","doc_kind":"experience_reference"},
+ {"type":"document","doc_kind":"anti_corruption"},
+ {"type":"risk"}
+]}
